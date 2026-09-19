@@ -11,8 +11,8 @@ kinematics, short-term velocity/direction evolution, PoR-relative
 displacement, and acceleration summary stats. Time steps past the Mocap
 free-flight cutoff (wall hit / unidentified ball) or past League's last
 recorded point come back as None rather than being interpolated/invented.
-Feature *normalization* (Phase 1 item 6 of next_plan.md) is intentionally not
-done here yet - these are raw feature values.
+This module writes raw feature values. The retrieval models normalize them
+against the League feature distribution.
 """
 
 from __future__ import annotations
@@ -26,14 +26,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-# Common elapsed times (ms) after PoR at which throws are compared (per
-# mocap_league_throw_matching.md). The synthetic League PoR lies halfway
-# between samples, while spatial-prior shifts and legacy detections can produce
-# other phases. Expose both 25 ms phases; sparse League rows populate only
-# their real timestamps, while dense 300 Hz Mocap rows populate both.
-# Most throws will not have valid data at every step up to 1000 ms - Mocap
-# trajectories are truncated at the free-flight cutoff (wall hit / ball
-# becomes unidentified) and later steps are correctly left as None.
+# The 25 ms grid covers both phases of 20 Hz League samples. Values after a
+# trajectory's free-flight cutoff remain missing.
 COMMON_TIME_STEPS_MS: List[int] = list(range(0, 1001, 25))
 
 

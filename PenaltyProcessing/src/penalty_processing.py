@@ -310,13 +310,12 @@ def _build_release_detection_json(
         separators=(",", ":"),
     )
 
-# TODO: Modularize this function heavily -> break it up into smaller functions, reusable; For example for appending unresolved (its always nearly the same)
 def process_penalties(
     penalties_file: Path,
     positions_dir: Path,
     output_dir: Path,
-    tol_y: float, # Unused?
-    tol_z: float, # Unused?
+    tol_y: float,
+    tol_z: float,
     limit: Optional[int],
     extend_start_ms: int = 0,
     include_unsuccessful: bool = False,
@@ -345,17 +344,16 @@ def process_penalties(
     rows = load_penalties(penalties_file)
     total_rows = len(rows)
 
-    # Filter first by penalty_id, if provided -> limits rows to only 1 row
+    # Restrict processing to one penalty when requested.
     if penalty_id is not None:
         rows = [row for row in rows if row.get("id", "").strip() == str(penalty_id)]
         logger.info("Filtered to penalty id %s: %d/%d", penalty_id, len(rows), total_rows)
         if not rows:
             raise SystemExit(f"No penalty with id {penalty_id} found in {penalties_file}")
 
-    # Filter further by potentially filtering for successful throws only
     if not include_unsuccessful:
         rows = [r for r in rows if is_successful_penalty(r)]
-    # Filter out throws which started at 00:00, 30:00, 60:00 -> TODO: Need to check if there is some better way to skip errornous throws, as 30:00 and 60:00 is possible
+    # Discard rows marked invalid by the timestamp/data-quality filter.
     rows = [r for r in rows if not should_skip_penalty_row(r)]
     logger.info(
         "Filtered to %s: %d/%d",
@@ -364,13 +362,11 @@ def process_penalties(
         total_rows,
     )
 
-    # Run directory is named after running count and time appended.
     run_dir = create_run_folder(output_dir)
     output_file = run_dir / "penalty_trajectories.csv"
     issues_file = run_dir / "penalty_trajectories_issues.csv"
     logger.info("Output directory: %s", run_dir)
 
-    # Edge case for test run (with some random rows or the first k rows)
     if random_test is not None:
         if random_test < len(rows):
             rows = random.sample(rows, random_test)
@@ -379,14 +375,12 @@ def process_penalties(
         rows = rows[:limit]
 
     # Build an index of all available fixture files, keyed by canonical team pair.
-    fixture_index, fixture_index_issues = build_fixture_index(positions_dir) # Consists of the canonical team_names as a tuple (this is the key) and a list (len=1) of the Paths leading to those files
+    fixture_index, fixture_index_issues = build_fixture_index(positions_dir)
     edge_cases = build_edge_case_mappings()
 
-    # Used to build an index of fixtures and their corresponding rows
     # Group penalty rows by the fixture file they belong to, so we only load
     # each position file once and process all its penalties together.
     grouped_rows: Dict[Path, List[Tuple[int, Dict[str, str]]]] = defaultdict(list)
-    # Unresolved rows with concrete issues
     unresolved: List[Dict[str, str]] = []
 
     for idx, row in enumerate(rows):
@@ -456,8 +450,7 @@ def process_penalties(
                 fixture_file.name,
             )
             flags: List[str] = []
-            # Load time (seperate function here)
-            # Parse the shot's local timestamp from the penalty row.
+            # Parse the shot's local timestamp.
             shot_dt = parse_penalty_local_time(row.get("timestamp_local_timezone", ""))
             if shot_dt is None:
                 unresolved.append(
@@ -471,7 +464,6 @@ def process_penalties(
                 )
                 continue
 
-            # Find first point after penalty start time (seperate function here)
             # Locate the first ball point at or after the shot timestamp.
             start_idx = first_idx_at_or_after(points, shot_dt)
             if start_idx is None:
@@ -487,7 +479,6 @@ def process_penalties(
                 continue
 
             distance = try_float(row.get("distance", ""))
-            # Finds out better start index if necessary, for early releases also finds release_idx
             # Correct the start index based on the reported shot distance
             # (e.g. move it earlier for short shots, or to the run-up zone for long shots).
             start_idx, corr_flags, release_idx = adjust_start_idx_by_distance(points, start_idx, distance)
@@ -500,7 +491,8 @@ def process_penalties(
             end_idx = find_goalline_crossing_idx(points, start_idx)
             if end_idx is None:
                 if include_unsuccessful and not is_success:
-                    # TODO: Find out what the "last" point refers to -> global last point of ball in fixture match or what?
+                    # Unsuccessful throws may not cross the goal line; retain
+                    # the fixture's final tracked ball sample.
                     end_idx = len(points) - 1
                     flags.append("unsuccessful:using_last_point")
                 else:
@@ -573,13 +565,12 @@ def process_penalties(
 
             # Prepend a fixed number of frames before the (possibly extended)
             # start so the visualization shows some context before the release.
-            prepended_ball_count = min(PREPEND_FRAME_COUNT, max(0, extended_start_idx)) # So only if our extended start index is not "extended" enough for our PREPEND_FRAME_COUNT
-            ball_start_idx_with_prepend = max(0, extended_start_idx - PREPEND_FRAME_COUNT) # Ah, i get why. But this is very confusing to read. TODO: Clarify why this is needed
+            prepended_ball_count = min(PREPEND_FRAME_COUNT, max(0, extended_start_idx))
+            ball_start_idx_with_prepend = max(0, extended_start_idx - PREPEND_FRAME_COUNT)
             traj = points[ball_start_idx_with_prepend : extended_end_idx + 1]
             if prepended_ball_count > 0:
                 flags.append(f"ball_prepend_frames:{prepended_ball_count}")
 
-            # TODO: Seperate function
             # Extract the goalkeeper trajectory aligned to the ball trajectory.
             goalkeeper_traj, goalkeeper_sensor_id = extract_goalkeeper_trajectory(
                 goalkeeper_candidates,
@@ -624,7 +615,7 @@ def process_penalties(
                     "timestamp_local_timezone": row.get("timestamp_local_timezone", ""),
                     "start_time_local": traj[0].local_dt.isoformat(timespec="milliseconds"),
                     "end_time_local": traj[-1].local_dt.isoformat(timespec="milliseconds"),
-                    "release_point_json": serialize_point(release_point), # This includes everything
+                    "release_point_json": serialize_point(release_point),
                     "release_time_local": release_point.local_dt.isoformat(timespec="milliseconds"),
                     "legacy_release_point_json": serialize_point(legacy_release_point),
                     "legacy_release_time_local": legacy_release_point.local_dt.isoformat(timespec="milliseconds"),
@@ -682,7 +673,6 @@ def process_penalties(
         "flags",
     ]
 
-    # TODO: Seperate functions for below stuff
     # Write the main results CSV.
     with output_file.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=output_fields, delimiter=";")

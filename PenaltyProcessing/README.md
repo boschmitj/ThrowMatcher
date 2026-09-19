@@ -1,224 +1,216 @@
-# Penalty Processing Tool
+# Penalty Processing Pipeline
 
-## Overview
+This pipeline matches 20 Hz League trajectories to
+300 Hz MoCap penalty throws.
+It detects the League point of release (PoR), converts both sources to a common
+coordinate system, extracts comparable features, ranks League candidates, and
+reconstructs a selected continuation at 300 Hz.
 
-This project matches penalty events from `penalties.csv` to the corresponding
-tracking file in `games_position_files/`, reconstructs the ball trajectory, and
-exports one enriched row per penalty.
+Run every command below from `PenaltyProcessing/`.
 
-The current pipeline uses:
+## Setup
 
-- `penalties.csv` for penalty metadata
-- `games_position_files/*_2_phases_positions.csv` for tracking data
-
-The output includes the extracted trajectory, release point information, derived
-metrics, and an issues file for unresolved rows.
-
-## Project Layout
-
-- `src/shot_matcher.py` - CLI entrypoint
-- `src/penalty_processing.py` - main processing pipeline
-- `src/ball_trajectory.py` - trajectory parsing and heuristics
-- `src/fixture_resolution.py` - fixture lookup and run-folder creation
-- `src/penalty_time_utils.py` - time parsing and name normalization helpers
-- `src/trajectory_reconstruction.py` - geometry-preserving reconstruction of
-  selected League continuations
-- `visualization/plot_reconstructed_match.py` - 3D reconstruction diagnostic
-
-## Inputs
-
-### `penalties.csv`
-
-Semicolon-separated penalty metadata. The pipeline expects at least these fields:
-
-- `id`
-- `home_team`
-- `away_team`
-- `timestamp_local_timezone`
-- `distance`
-- `success`
-- `game_clock`
-
-### `games_position_files/*_2_phases_positions.csv`
-
-Tracking files with ball positions. The pipeline reads only rows where
-`group name == Ball` and expects columns such as:
-
-- `formatted local time`
-- `x in m`
-- `y in m`
-- `z in m`
-- `speed in m/s`
-- `acceleration in m/s2`
-- `direction of movement in deg`
-- `ts in ms`
-
-## Outputs
-
-Each run creates a new numbered folder under `out/penalty_trajectories/`, for
-example:
-
-- `out/penalty_trajectories/run_1/penalty_trajectories.csv`
-- `out/penalty_trajectories/run_1/penalty_trajectories_issues.csv`
-
-The main CSV contains the matched trajectory, release point, and derived values.
-The issues CSV records unresolved rows and fixture index warnings.
-
-## How To Run
-
-### 1. Install dependencies
-
-From the repository root:
+Create or activate a Python environment, then install the project and test dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-If you are using a virtual environment, activate it first.
+## Required data
 
-### 2. Run the pipeline
+The raw tracking data is not committed. Supply it with this layout:
 
-The recommended command is from the repository root:
-
-```bash
-python3 src/shot_matcher.py
+```text
+PenaltyProcessing/
+├── penalties.csv
+├── games_position_files/
+│   └── <home>_vs_<away>_2_phases_positions.csv
+└── mocap_files/
+    └── <throw_type>/
+        ├── 6DOF/       # ball marker TSV
+        ├── skeleton/   # skeleton TSV
+        └── body/       # optional body marker TSV
 ```
 
-If you are already inside `src/`, you can run:
+`penalties.csv` is semicolon-separated. The League position files must contain
+ball coordinates and timestamps; the loaders report missing required columns.
+Generated files are written below `out/`, which is gitignored.
+
+## Reproduce the pipeline
+
+### 1. Detect League release points
 
 ```bash
-python3 shot_matcher.py
+python src/release_detector_trajectory_based.py \
+  --penalties penalties.csv \
+  --positions-dir games_position_files \
+  --exclude-deflections
 ```
 
-Both forms are equivalent. The repo-root form is safer because all default paths
-are written relative to the project root.
+The command creates a timestamped directory such as
+`out/run_20260816_144549/`. Pass that run's
+`simple_penalty_trajectories.csv` to the next command.
+`simple_penalty_errors.csv` contains rows that could not be processed.
 
-### Reconstruct selected kNN matches
-
-After producing the raw representations and kNN results, reconstruct every
-rank-1 match at 300 Hz:
+### 2. Build unified trajectories and features
 
 ```bash
-python3 src/trajectory_reconstruction.py \
-  --matches out/weighted_knn_matches.csv \
+python src/create_throw_representation.py \
+  --throw-type throw_ul throw_gegendreher throw_heber throw_or \
+  --league-csv out/run_YYYYMMDD_HHMMSS/simple_penalty_trajectories.csv \
+  --output-dir out/throw_features
+```
+
+This writes:
+
+```text
+out/throw_features/raw_mocap.csv
+out/throw_features/raw_league.csv
+out/throw_features/throw_index.csv
+out/throw_features/features_mocap.csv
+out/throw_features/features_league.csv
+out/throw_features/direction_recomputation_check.csv
+```
+
+The feature files are produced by default. League and Mocap kinematics are
+recomputed from positions with the same finite-difference method.
+
+### 3. Run the manually weighted kNN baseline
+
+```bash
+python -m src.model.weighted_knn \
+  --mocap out/throw_features/features_mocap.csv \
+  --league out/throw_features/features_league.csv \
+  --weight-preset best_random \
+  --output out/throw_features/weighted_knn_matches.csv \
+  -k 10
+```
+
+Use `python -m src.model.weighted_knn --help` to inspect the other presets or
+pass a JSON weight dictionary with `--weights`.
+
+### 4. Reproduce the learned-ranker experiment
+
+Build the deterministic synthetic train, validation, and test splits:
+
+```bash
+python -m src.ranking.build_ranking_dataset \
+  --league out/throw_features/features_league.csv \
+  --raw-league out/throw_features/raw_league.csv \
+  --output-dir out/throw_features/ranking_dataset \
+  --augmentations 6 \
+  --severity-mix 0.35,0.40,0.25 \
+  --hard-negatives 12 \
+  --random-negatives 3 \
+  --weight-preset best_random \
+  --seed 42
+```
+
+Train and evaluate the pairwise ranker:
+
+```bash
+python -m src.ranking.evaluate_ranker \
+  --league out/throw_features/features_league.csv \
+  --mocap out/throw_features/features_mocap.csv \
+  --dataset-dir out/throw_features/ranking_dataset \
+  --output-dir out/throw_features/learned_ranker_all_types \
+  --regularization-grid 0,0.01,0.1,1,10 \
+  --minimum-weight 0.01 \
+  --minimum-common-trajectory-points 2 \
+  --minimum-overlap-ratio 0.5 \
+  --weight-preset best_random \
+  -k 10
+```
+
+`metrics.json` contains Recall@1/3/5 and MRR for the synthetic splits.
+`learned_ranked_candidates.csv` and `manual_ranked_candidates.csv` contain the
+real Mocap-to-League rankings.
+
+For the recorded experiment, the learned test metrics were Recall@1 `0.5725`,
+Recall@3 `0.6623`, Recall@5 `0.7087`, and MRR `0.6387`. The corresponding
+manual-kNN values were `0.5145`, `0.6362`, `0.6942`, and `0.5986`.
+
+### 5. Reproduce the manual nDCG evaluation
+
+Create blinded relevance judgments from the union of both top-ten lists:
+
+```bash
+python -m src.ranking.manual_annotation_tool \
+  --mocap out/throw_features/raw_mocap.csv \
+  --league out/throw_features/raw_league.csv \
+  --knn-results out/throw_features/learned_ranker_all_types/manual_ranked_candidates.csv \
+  --ranker-results out/throw_features/learned_ranker_all_types/learned_ranked_candidates.csv \
+  --output out/throw_features/manual_relevance_annotations.csv \
+  --top-k 10 \
+  --seed 42
+```
+
+The tool saves after every rating and can be resumed. Then rerun the command
+from step 4 with:
+
+```text
+--manual-relevance out/throw_features/manual_relevance_annotations.csv
+--exclude-mocap-throws throw_ul_seg3
+```
+
+`throw_ul_seg3` was excluded because it is a false throw detection. The
+original judgments are not distributed; recreating them requires repeating
+the blinded annotation. The recorded nDCG@10 values were `0.5490` for the
+learned ranker and `0.4843` for manual weighted kNN.
+
+### 6. Reconstruct the selected continuations
+
+```bash
+python src/trajectory_reconstruction.py \
+  --matches out/throw_features/learned_ranker_all_types/learned_ranked_candidates.csv \
   --raw-league out/throw_features/raw_league.csv \
   --raw-mocap out/throw_features/raw_mocap.csv \
-  --output out/reconstructed_matched_trajectories.csv \
-  --target-hz 300
+  --output out/throw_features/learned_ranker_all_types/reconstructed_rank1.csv \
+  --target-hz 300 \
+  --rank 1 \
+  --skip-invalid
 ```
 
-This stage applies one constant translation to every measured League point. It
-does not rotate, scale, smooth, velocity-correct, or warp the selected throw.
-Output kinematics are derived from the reconstructed positions and never feed
-back into them.
-
-To reconstruct matches from a particular randomized weighted-kNN run:
+Prepend the measured pre-release Mocap samples:
 
 ```bash
-python3 src/trajectory_reconstruction.py \
-  --random-search-dir out/weighted_knn_random_20260818_143012_123456 \
-  --random-run-id 7
+python src/combine_full_reconstructed_trajectories.py \
+  --reconstructed out/throw_features/learned_ranker_all_types/reconstructed_rank1.csv \
+  --raw-mocap out/throw_features/raw_mocap.csv \
+  --output out/throw_features/learned_ranker_all_types/reconstructed_rank1_full.csv
 ```
 
-This reads `run_0007/weighted_knn_matches.csv` and `run_0007/weights.json` and
-writes `out/reconstructed_matched_trajectories_run_0007.csv`. The selected run
-ID and complete weight dictionary are also stored in the output CSV.
-
-Alternatively, select a run automatically from the 20 runs with the smallest
-balanced mean top-1 distance:
+If the original Mocap 6DOF files are available, replace fitted pre-release ball
+centres with their ground-truth centres (take note that they may not reflect the geometric center of the rigid body):
 
 ```bash
-python3 src/trajectory_reconstruction.py \
-  --random-search-dir out/weighted_knn_random_20260818_143012_123456 \
-  --select-weight-groups release_speed release_angles \
-  --top-runs 20
+python src/combine_gt_centers_with_reconstructed_trajectories.py \
+  --reconstructed-full out/throw_features/learned_ranker_all_types/reconstructed_rank1_full.csv \
+  --throw-index out/throw_features/throw_index.csv \
+  --mocap-root mocap_files \
+  --output out/throw_features/learned_ranker_all_types/reconstructed_rank1_full_gt_ball.csv
 ```
 
-For one group, this chooses its largest weight in the shortlist. For multiple
-groups, it maximizes their geometric mean, favouring runs where every selected
-group has substantial importance. The output filename receives the selected
-`run_XXXX` suffix automatically.
+## Inspect results
 
-### 3. Check available options
+Plot one reconstructed match by using IDs present in the reconstruction CSV:
 
 ```bash
-python3 src/shot_matcher.py --help
+python visualization/plot_reconstructed_match.py \
+  --reconstructed out/throw_features/learned_ranker_all_types/reconstructed_rank1.csv \
+  --raw-league out/throw_features/raw_league.csv \
+  --raw-mocap out/throw_features/raw_mocap.csv \
+  --mocap-throw-id throw_ul_seg1 \
+  --league-throw-id 12039519 \
+  --output out/reconstructed_match.png
 ```
 
-This prints all supported CLI flags and is the quickest way to confirm the
-current defaults.
+Every executable exposes its current options through `--help`.
 
-## Common Run Examples
+## Tests
 
-### Process the full dataset
+From this directory, run:
 
 ```bash
-python3 src/shot_matcher.py
+python -m pytest tests
 ```
-
-### Process only one penalty by id
-
-```bash
-python3 src/shot_matcher.py --penalty-id 12345
-```
-
-### Process only the first N matching penalties
-
-```bash
-python3 src/shot_matcher.py --limit 25
-```
-
-### Randomly sample penalties for a quick test run
-
-```bash
-python3 src/shot_matcher.py --random-test 10
-```
-
-### Include unsuccessful penalty throws
-
-```bash
-python3 src/shot_matcher.py --include-unsuccessful
-```
-
-### Extend the start window before the shot timestamp
-
-```bash
-python3 src/shot_matcher.py --extend-start-ms 500
-```
-
-You can combine these flags when needed, for example:
-
-```bash
-python3 src/shot_matcher.py --include-unsuccessful --limit 50 --extend-start-ms 250
-```
-
-## Command-Line Options
-
-- `--penalties`: path to `penalties.csv`.
-- `--positions-dir`: directory containing `*_2_phases_positions.csv` files.
-- `--output-dir`: base output directory; the script creates `penalty_trajectories/run_N/` inside it.
-- `--tol-y`, `--tol-z`: currently exposed as CLI settings and passed through the pipeline.
-- `--limit`: process only the first N filtered penalties.
-- `--random-test`: randomly sample N penalties after filtering.
-- `--include-unsuccessful`: include unsuccessful throws instead of only successful ones.
-- `--penalty-id`: process one specific penalty row.
-- `--extend-start-ms`: extend the trajectory window backwards before the shot time.
-
-## What The Pipeline Does
-
-1. Load `penalties.csv`.
-2. Filter rows according to the selected CLI flags.
-3. Resolve each penalty to a matching tracking file in `games_position_files/`.
-4. Load ball tracking rows from the matched fixture.
-5. Align the shot timestamp to the tracking timeline.
-6. Apply the existing distance-based plausibility corrections.
-7. Build the final trajectory window.
-8. Select and serialize the release point.
-9. Write the output CSVs into a new run folder.
-
-## Notes
-
-- The pipeline creates a new `run_N` directory each time it runs.
-- Some penalties may end up in the issues file if the matching fixture is missing,
-  the timestamp cannot be parsed, or the trajectory cannot be reconstructed.
-- The logic is the same as before the refactor; only the code organization changed.

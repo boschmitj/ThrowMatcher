@@ -1,77 +1,3 @@
-.vscode/
-.env
-Blender/BenchSeats/
-Blender/Bleacher/
-
-
-*.blend1
-HPE__old/video_pipeline/third_party/ViTPose/td-hm_ViTPose-large_8xb64-210e_coco-256x192-53609f55_20230314.pth
-HPE__old/video_pipeline/outputs/
-
-__pycache__/
-*.py[cod]
-
-
-HPE__old/video_pipeline/outputs/
-
-
-HPE__old/Mocap/*.tsv
-HPE__old/video_pipeline/mocap2/
-*.fbx
-*.qtm
-
-
-HPE__old/video_pipeline/third_party/MotionBERT/
-
-
-PenaltyProcessing/out/
-PenaltyProcessing/games_position_files
-PenaltyProcessing/penalties.csv
-PenaltyProcessing/mocap_por/
-
-# LaTeX auxiliary files
-*.aux
-*.bbl
-*.bcf
-*.blg
-*.fdb_latexmk
-*.fls
-*.log
-*.out
-*.run.xml
-*.synctex.gz
-*.toc
-*.lof
-*.lot
-
-# Bibliography/index/glossary intermediates
-*.idx
-*.ilg
-*.ind
-*.ist
-*.acn
-*.acr
-*.alg
-*.glg
-*.glo
-*.gls
-*.glsdefs
-
-# Beamer / navigation files
-*.nav
-*.snm
-*.vrb
-
-# Temporary files
-*.tmp
-/writing
-
-/PenaltyProcessing/mocap_files
-/out_from_pc
-/PenaltyProcessing/evaluation
-
-
-# Unity related stuff
 # This .gitignore file should be placed at the root of your Unity project directory
 #
 # Get latest from https://github.com/github/gitignore/blob/main/Unity.gitignore
@@ -79,6 +5,8 @@ PenaltyProcessing/mocap_por/
 # Recommended: add any editor/OS/tool-specific ignore rules from the Global/ templates as needed.
 # See: https://github.com/github/gitignore/tree/main/Global
 #
+
+*
 .utmp/
 /[Ll]ibrary/
 /[Tt]emp/

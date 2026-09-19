@@ -18,7 +18,7 @@ Directory layout (per throw type):
 Each throw_type directory is one recording that may contain multiple throws,
 detected via mocap_por_detection_pipeline.detect_throw_segments().
 
-Coordinate transformation (per mocap_league_throw_matching.md):
+Coordinate transformation:
   1. Swap X/Y (newX = oldY, newY = -oldX). Mocap PoR/free-flight detection
      (mocap_por_detection_pipeline) assumes the ball trajectory already uses
      this swapped, +X-is-throw-direction axis convention (e.g. its wall-hit
@@ -130,7 +130,7 @@ from release_detector_trajectory_based import (
 
 # League canonical court: origin at court centre, +x toward goal
 # Goal line at x = +20 m, 7 m line at x = +13 m
-# Mocap origin (0,0,0) ≈ (13 m - 0.40 m, 0, 0) in League coords per goal doc
+# Mocap origin (0,0,0) maps to (13 m - 0.40 m, 0, 0) in League coordinates.
 # → after swap_xy, translate Mocap x by +12.6 m
 
 MOCAP_TO_LEAGUE_TRANSLATION_M = 12.6  # mm→m handled below; pure x-translation
@@ -189,7 +189,7 @@ def mocap_to_league_coords(
              variant, in which case the swap is skipped to avoid double-swapping).
     Step 2: Convert mm → m.
     Step 3: Translate x by +12.6 m so Mocap (0,0,0) → League (12.6, 0, 0)
-             (at the 7m line position per goal doc).
+             (at the calibrated seven-metre-line position).
 
     Returns (x_League_m, y_League_m, z_League_m).
     """
@@ -520,9 +520,9 @@ def load_league_throws(
     precomputed_csv: Optional[Path] = None,
 ) -> Tuple[List[ThrowRepresentation], List[Dict[str, Any]]]:
     """
-    Load League throws from penalties.csv + position files,
-    applying the same pipeline as simple_release_detector.py but
-    returning ThrowRepresentation objects with PoR-relative trajectories.
+    Load League throws from penalties.csv and position files using the
+    trajectory-based release detector, returning ThrowRepresentation objects
+    with PoR-relative trajectories.
 
     Args:
         direction_source: unused - retained only for backward-compatible CLI
@@ -532,7 +532,6 @@ def load_league_throws(
             for both League and Mocap. A diagnostic comparison between the
             recomputed and source-provided direction is still returned so the
             difference can be inspected.
-            inspected before switching.
         precomputed_csv: Optional path to a previously computed
             simple_penalty_trajectories.csv (from release_detector_trajectory_based.py).
             If provided, the expensive per-penalty PoR detection is skipped and
@@ -634,7 +633,7 @@ def load_league_throws(
             if first_projectile_idx is None or not 0 <= first_projectile_idx < len(ball_points):
                 raise ValueError("League CSV has no valid first_projectile_idx/release_idx")
             # ``projectile_end_idx`` belongs to PoR detection and deliberately
-            # stops before a detected bounce. Do not reuse it for Phase 3: the
+            # stops before a detected bounce. Do not reuse it for reconstruction: the
             # raw League continuation must retain the bounce and rebound until
             # the first goal-line crossing. This leaves release detection
             # completely unchanged while giving reconstruction the full path.
@@ -1481,7 +1480,7 @@ def main() -> int:
     logger.info("Output dir: %s", output_dir)
     logger.info("Log file: %s", log_path)
 
-    # ---- Phase 1: Process Mocap throws ----
+    # Process Mocap throws.
     logger.info("--- Processing Mocap throws ---")
 
     mocap_reps: List[ThrowRepresentation] = []
@@ -1515,7 +1514,7 @@ def main() -> int:
     logger.info("Successfully processed %d Mocap throws across %d recording(s) (%d failed/skipped)",
                 len(mocap_reps), len(args.throw_type), n_mocap_failed)
 
-    # ---- Phase 2: Load League throws ----
+    # Load League throws.
     logger.info("--- Loading League throws ---")
 
     # Compute League throws once per invocation. If --league-csv is provided,
@@ -1532,7 +1531,7 @@ def main() -> int:
     )
     logger.info("Successfully loaded %d League throws", len(league_reps))
 
-    # ---- Direction recomputation diagnostic (Phase 1 item 5) ----
+    # Compare source-provided and recomputed League directions.
     compared = [r for r in direction_diff_records if r["n_compared"] > 0]
     if compared:
         mean_diffs = [r["mean_abs_diff_deg"] for r in compared]
@@ -1552,7 +1551,7 @@ def main() -> int:
         writer.writerows(direction_diff_records)
     logger.info("Wrote direction recomputation diagnostics to %s", direction_diff_path)
 
-    # ---- Phase 3: Write output CSVs ----
+    # Write raw trajectory outputs.
     logger.info("--- Writing output CSVs ---")
 
     raw_mocap_path = output_dir / "raw_mocap.csv"
@@ -1567,7 +1566,7 @@ def main() -> int:
     write_throw_index_csv(mocap_reps, throw_index_path)
     logger.info("Wrote %d rows to %s", len(mocap_reps), throw_index_path)
 
-    # ---- Phase 4: Feature extraction (optional, on by default) ----
+    # Extract matching features unless explicitly disabled.
     features_mocap_path: Optional[Path] = None
     features_league_path: Optional[Path] = None
     if args.extract_features:

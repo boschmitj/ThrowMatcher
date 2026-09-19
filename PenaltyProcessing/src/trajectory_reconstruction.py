@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Geometry-preserving reconstruction of matched League trajectories.
 
-Phase 3 performs exactly one transformation of measured positions: a constant
+Reconstruction performs exactly one transformation of measured positions: a constant
 translation from the League trajectory's PoR to the Mocap PoR.  Upsampling
 only evaluates a shape-preserving interpolant through those translated points.
 """
@@ -522,7 +522,7 @@ def validate_reconstruction(
     original: Sequence[Mapping[str, Any]], aligned: Sequence[Mapping[str, Any]],
     control_points: Sequence[Mapping[str, Any]], mocap_por: Sequence[float], *, atol: float = 1e-6,
 ) -> None:
-    """Raise AssertionError if any Phase 3 geometry/timing invariant is broken."""
+    """Raise AssertionError if a reconstruction geometry/timing invariant is broken."""
     original_xyz = np.asarray([[p[a] for a in XYZ] for p in original], dtype=float)
     aligned_xyz = np.asarray([[p[a] for a in XYZ] for p in aligned], dtype=float)
     np.testing.assert_allclose(aligned_xyz[0], mocap_por, atol=atol, rtol=0)

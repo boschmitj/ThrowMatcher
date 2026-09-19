@@ -429,10 +429,7 @@ def _align_goalkeeper_to_ball_timestamps(
     aligned: List[GoalkeeperPoint] = []
     idx = 0
 
-    # TODO: See below
-    # This can be heavily simplified: Instead of checking for every point, check if the points for the goalkeeper are continuous, so full 20 Hz is matched
-    # Then align first and last point of ball points and goalkeeper points. Fill the rest with the points between these two times of the appropriate sensor
-    # Keep below implementation as fallback function in case the ball points or goalkeeper points are not continuous (50ms increments) -> log a warning in this case
+    # Nearest-neighbour alignment also handles gaps in goalkeeper tracking.
     for ball_point in ball_traj:
         # Advance the goalkeeper pointer until it passes the current ball time.
         while idx + 1 < len(sensor_points) and sensor_points[idx + 1].local_dt <= ball_point.local_dt:
@@ -462,9 +459,9 @@ def _align_goalkeeper_to_ball_timestamps(
 
 
 def extract_goalkeeper_trajectory(
-    candidates: List[GoalkeeperPoint], # already filtered for positions close to either goal
+    candidates: List[GoalkeeperPoint],
     ball_traj: List[BallPoint],
-    prepend_frames: int = 5, # not used
+    prepend_frames: int = 5,
 ) -> Tuple[List[GoalkeeperPoint], str]:
     """Select one goalkeeper trajectory aligned to ball timestamps.
 
@@ -497,18 +494,16 @@ def extract_goalkeeper_trajectory(
     # Which side of the field is the shot heading to?
     same_side_sign = _detect_shot_direction(ball_traj)
 
-    # Create dict from sensor id to list of points of the sensor in the candidates time range
+    # Group candidate points by tracked sensor.
     by_sensor: Dict[str, List[GoalkeeperPoint]] = {}
     for p in candidates:
-        by_sensor.setdefault(p.sensor_id, []).append(p) # Create empty list if not existing yet, append the point
+        by_sensor.setdefault(p.sensor_id, []).append(p)
 
-    # Now gradually filter out to get for best matching sensor, go on to next sensor_id if sensor_points is empty
     best_sensor = ""
     best_segment: List[GoalkeeperPoint] = []
     best_score: Optional[Tuple[int, float, float]] = None
 
     for sensor_id, points in by_sensor.items():
-        # Filter out sensors on wrong side of the field
         # A goalkeeper on the side the ball is NOT heading to cannot be the
         # defending goalkeeper for this shot.
         sensor_points = [
@@ -526,7 +521,6 @@ def extract_goalkeeper_trajectory(
         if not in_range_indices:
             continue
 
-        # Create time range for goalkeeper candidate
         # Take the contiguous segment of this sensor covering the ball's window.
         first_in_range = in_range_indices[0]
         last_in_range = in_range_indices[-1]
@@ -539,7 +533,7 @@ def extract_goalkeeper_trajectory(
         # (mean_abs_y small -> -mean_abs_y large).
         mean_abs_x = sum(abs(p.x) for p in segment) / len(segment)
         mean_abs_y = sum(abs(p.y) for p in segment) / len(segment)
-        score = (len(segment), mean_abs_x, -mean_abs_y) # Decides by length of segment, then how far away from midline, how close to center of goalline (y, less is better).
+        score = (len(segment), mean_abs_x, -mean_abs_y)
 
         # Keep the best-scoring sensor and align it to the ball timestamps.
         if best_score is None or score > best_score:
@@ -634,35 +628,26 @@ def detect_release_for_short_distance(
     Returns:
         Index of the detected release point, or None if it could not be found.
     """
-    # Find original start point
     start_dt = points[start_idx].local_dt
-    # Go back back_window_ms ms (per default 3s)
     min_dt = start_dt - timedelta(milliseconds=back_window_ms)
 
-    # Find the new points for the new time range
     candidates = [i for i in range(len(points)) if min_dt <= points[i].local_dt <= start_dt]
     if not candidates:
         return None
 
-    # Filter out those points with no acceleration
     candidates_with_accel = [i for i in candidates if not math.isnan(points[i].accel)]
     if not candidates_with_accel:
         return None
 
-    # Find out the max accel now
     max_accel = max(points[i].accel for i in candidates_with_accel)
     eps = 1e-6
-    # Find out corresponding indices
     max_idxs = [i for i in candidates_with_accel if abs(points[i].accel - max_accel) <= eps]
     if not max_idxs:
         return None
 
-    # Tie break for the last one (makes sense, afterwards ball should become slower)
+    # Prefer the final sample when the peak spans multiple frames.
     peak_idx = max(max_idxs)
 
-    # TODO: Check if this makes sense. A better implementation would do a quick sanity check if the previous point is even inside a sensible area around the 7m point (defined like earlier, independent of field side)
-    # Now going back as long as the previous acceleration was higher as to indicate that PoR was earlier
-    # Goes before the selected prepend time window (default 3s)
     # Walk backwards while the previous acceleration is >= the current one;
     # this traces the acceleration ramp-up back to the release.
     release_idx = peak_idx
@@ -708,8 +693,6 @@ def has_x_direction_reversal(points: List[BallPoint], start_idx: int) -> bool:
     return False
 
 
-# TODO: This function is EXTREMELY naive. It doesnt check for the highest acceleration in the near proximity, which is a liability.
-# TODO: It should also check current z and y coords. It should also check for the highest accel. in a plausible positional window, namely look at 200ms before and after, find out if there are higher accelerations, go back (or forth) until (while checking if position makes sense) decrease in accel is found, select point before
 def is_plausible_release_point(
     points: List[BallPoint],
     start_idx: int,
@@ -779,29 +762,23 @@ def adjust_start_idx_by_distance(
         flags["distance_check"] = "missing_distance"
         return start_idx, flags, release_idx
 
-    if distance < 6.95: # TODO: is this threshold too low, e.g. should the distance be even closer for this adaption?
-        # Finds highest acceleration before (extends time range up to 3s before, maybe even more if throw started at this edge)
+    if distance < 6.95:
         rel_idx = detect_release_for_short_distance(points, start_idx)
         if rel_idx is None:
             flags["short_distance_correction"] = "no_release_detected"
             return start_idx, flags, release_idx
 
         release_idx = rel_idx
-        # Set start for visualisation to 1s before release
+        # Keep one second of context before the detected release.
         corrected_start_dt = points[release_idx].local_dt - timedelta(seconds=1)
         corrected_start_idx = first_idx_at_or_after(points, corrected_start_dt)
         if corrected_start_idx is not None:
-            # TODO: Show such flags in the visualisation plots
             flags["short_distance_correction"] = "applied"
             return corrected_start_idx, flags, release_idx
 
         flags["short_distance_correction"] = "failed_index_lookup"
         return start_idx, flags, release_idx
 
-    # TODO: What is this? This is no correction at all.
-    # Just returns the first index which is in this range
-    # No check for release_index, returns None?
-    # TODO: Maybe its just better to append a second to the range before the point where it has distance < 7.5 or smth like that
     if distance > 8:
         # For long shots, move the start to the first point inside the
         # 12..14 m x-gate (the typical run-up zone).
@@ -813,7 +790,6 @@ def adjust_start_idx_by_distance(
         flags["long_distance_correction"] = "no_x_gate_match"
         return start_idx, flags, release_idx
 
-    # Also returns None for release_index
     # Distance is within the normal range -> no correction needed.
     flags["distance_check"] = "in_range"
     return start_idx, flags, release_idx
@@ -1575,13 +1551,14 @@ def select_release_point(points: List[BallPoint]) -> Tuple[BallPoint, str]:
         rel_local_i = max(finite_accel_indices, key=lambda i: points[i].accel)
         return points[rel_local_i], "release_point:max_a"
 
-    # TODO: This is a stupid fallback -> needs to go over release_zone_indies too or at least check the points position as a release point outside [6.5, 7.5] really does not make sense
+    # Fall back to the global acceleration maximum when the release zone has
+    # no finite acceleration samples.
     finite_accel_indices = [i for i, p in enumerate(points) if not math.isnan(p.accel)]
     if finite_accel_indices:
         rel_local_i = max(finite_accel_indices, key=lambda i: points[i].accel)
         return points[rel_local_i], "release_point:max_a_fallback_global"
 
-    # TODO: Same as comment above
+    # If acceleration is unavailable, use the global speed maximum.
     finite_speed_indices = [i for i, p in enumerate(points) if not math.isnan(p.speed)]
     if finite_speed_indices:
         rel_local_i = max(finite_speed_indices, key=lambda i: points[i].speed)

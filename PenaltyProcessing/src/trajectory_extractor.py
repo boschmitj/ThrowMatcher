@@ -36,7 +36,6 @@ class TrajectoryExtractor:
             errors='coerce'
         ).astype(int)
         
-        # Filter for ball positions only
         # Keep only rows whose "full name" contains "Ball".
         self.ball_data = self.positions_df[
             self.positions_df['full name'].str.contains('Ball', case=False, na=False)
@@ -58,7 +57,6 @@ class TrajectoryExtractor:
         shot = self.shots_df.iloc[shot_idx]
         shot_time = int(shot['ts_ms'])
         
-        # Get ball positions around shot time
         # Select ball points whose timestamp falls within the window around
         # the shot timestamp.
         time_range = (
@@ -72,11 +70,9 @@ class TrajectoryExtractor:
         if len(trajectory_points) < 2:
             return None
         
-        # Calculate derived metrics
         # Relative time (in ms) of each trajectory point compared to the shot.
         trajectory_points['time_from_shot_ms'] = trajectory_points['ts_ms'] - shot_time
         
-        # Extract position and speed columns
         # Keep only the columns we care about and drop rows with missing positions.
         trajectory_points = trajectory_points[[
             'ts_ms', 'time_from_shot_ms', 'x in m', 'y in m', 'z in m',
@@ -86,7 +82,6 @@ class TrajectoryExtractor:
         if len(trajectory_points) < 2:
             return None
         
-        # Find release point (max speed before shot, or closest to shot time)
         # The release is assumed to be the last point at or before the shot
         # timestamp; if there is none, fall back to the first point.
         release_idx = (trajectory_points['time_from_shot_ms'] <= 0).sum() - 1
@@ -126,7 +121,6 @@ class TrajectoryExtractor:
         shot = self.shots_df.iloc[shot_idx]
         points = traj['trajectory_points']
         
-        # Check criteria
         is_penalty_type = shot['shot_category'] == 'penalty'
         is_7m_distance = 6.5 <= shot['distance'] <= 7.5  # 7m line typically 7m
         

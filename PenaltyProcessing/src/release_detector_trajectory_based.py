@@ -1281,9 +1281,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Configure logging so the user sees which fixture is currently being
-    # processed. Intended for CLI use; library callers can configure the
-    # "simple_release_detector" logger themselves.
+    # Library callers may configure the release_detector_trajectory_based
+    # logger themselves.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
